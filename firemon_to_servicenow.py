@@ -379,8 +379,15 @@ def check_existing_record(session, instance_url, table_name, unique_identifier, 
         dict: Existing record if found, None otherwise
     """
     url = f"{instance_url}/api/now/table/{table_name}"
+
+    # Use appropriate field for deduplication based on table type
+    if table_name == "em_event":
+        query_field = "message_key"
+    else:
+        query_field = "correlation_id"
+
     params = {
-        'sysparm_query': f'correlation_id={unique_identifier}',
+        'sysparm_query': f'{query_field}={unique_identifier}',
         'sysparm_limit': 1
     }
 
@@ -519,7 +526,7 @@ def format_service_objects(objects):
 
     return ", ".join(result) if result else "Any"
 
-def create_servicenow_payload_device_level(control, device_id, device_name, assessment_uuid):
+def create_servicenow_payload_device_level(control, device_id, device_name, assessment_uuid, table_name="incident"):
     """
     Create ServiceNow record payload from FireMon device-level control failure
 
@@ -528,6 +535,7 @@ def create_servicenow_payload_device_level(control, device_id, device_name, asse
         device_id (int): Device ID
         device_name (str): Device name
         assessment_uuid (str): Assessment UUID
+        table_name (str): ServiceNow table name (default: incident)
 
     Returns:
         dict: ServiceNow record payload
@@ -556,38 +564,53 @@ Control Violation:
 - Description: {control_description}
 """
 
-    # Map FireMon severity to ServiceNow impact/urgency
+    # Map FireMon severity to ServiceNow severity (1-5 scale)
     severity_map = {
         "CRITICAL": "1",
         "HIGH": "2",
         "MEDIUM": "3",
         "LOW": "4",
-        "INFO": "4"
+        "INFO": "5"
     }
 
     # Handle numeric severity (convert to string first)
     severity_str = str(control_severity).upper()
-    impact = severity_map.get(severity_str, "3")
+    severity_value = severity_map.get(severity_str, "3")
 
-    # Create ServiceNow record (adjust fields based on your table schema)
-    payload = {
-        "short_description": f"FireMon Device Control Failure: {control_name} - {device_name}",
-        "description": description,
-        "correlation_id": correlation_id,
-        "impact": impact,
-        "urgency": impact,
-        "category": "Security",
-        "subcategory": "Firewall Configuration Violation",
-        "u_firemon_device_id": str(device_id),
-        "u_firemon_assessment": assessment_uuid,
-        "u_firemon_control_code": control_code,
-        "u_firemon_control_type": control_type,
-        "u_firemon_severity": severity_str
-    }
+    # Create payload based on table type
+    if table_name == "em_event":
+        # Event Management table schema
+        payload = {
+            "source": "FireMon Security Manager",
+            "node": device_name,
+            "type": "Device Control Failure",
+            "severity": severity_value,
+            "description": description,
+            "message_key": correlation_id,
+            "resource": f"Device {device_id}",
+            "additional_info": f"Control: {control_name}, Code: {control_code}, Type: {control_type}",
+            "time_of_event": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    else:
+        # Incident table schema (default)
+        payload = {
+            "short_description": f"FireMon Device Control Failure: {control_name} - {device_name}",
+            "description": description,
+            "correlation_id": correlation_id,
+            "impact": severity_value,
+            "urgency": severity_value,
+            "category": "Security",
+            "subcategory": "Firewall Configuration Violation",
+            "u_firemon_device_id": str(device_id),
+            "u_firemon_assessment": assessment_uuid,
+            "u_firemon_control_code": control_code,
+            "u_firemon_control_type": control_type,
+            "u_firemon_severity": severity_str
+        }
 
     return payload
 
-def create_servicenow_payload(rule, control, device_id, assessment_uuid):
+def create_servicenow_payload(rule, control, device_id, assessment_uuid, table_name="incident"):
     """
     Create ServiceNow record payload from FireMon rule and control data
 
@@ -596,6 +619,7 @@ def create_servicenow_payload(rule, control, device_id, assessment_uuid):
         control (dict): FireMon control violation data
         device_id (int): Device ID
         assessment_uuid (str): Assessment UUID
+        table_name (str): ServiceNow table name (default: incident)
 
     Returns:
         dict: ServiceNow record payload
@@ -604,6 +628,7 @@ def create_servicenow_payload(rule, control, device_id, assessment_uuid):
     rule_number = rule.get("ruleNumber", "")
     rule_severity = rule.get("cumulativeRuleSeverity", "")
     policy_name = rule.get("policy", {}).get("displayName", "")
+    device_name = rule.get("deviceName", f"Device-{device_id}")
 
     sources = format_network_objects(rule.get("sources", []))
     destinations = format_network_objects(rule.get("destinations", []))
@@ -644,32 +669,49 @@ Control Violation:
 - Description: {control_description}
 """
 
-    # Map FireMon severity to ServiceNow impact/urgency
+    # Map FireMon severity to ServiceNow severity (1-5 scale)
     severity_map = {
         "CRITICAL": "1",
         "HIGH": "2",
         "MEDIUM": "3",
         "LOW": "4",
-        "INFO": "4"
+        "INFO": "5"
     }
 
-    impact = severity_map.get(control_severity, "3")
+    # Handle numeric severity (convert to string first)
+    severity_str = str(control_severity).upper()
+    severity_value = severity_map.get(severity_str, "3")
 
-    # Create ServiceNow record (adjust fields based on your table schema)
-    payload = {
-        "short_description": f"FireMon Control Failure: {control_name} - {rule_name}",
-        "description": description,
-        "correlation_id": correlation_id,
-        "impact": impact,
-        "urgency": impact,
-        "category": "Security",
-        "subcategory": "Firewall Policy Violation",
-        "u_firemon_device_id": str(device_id),
-        "u_firemon_assessment": assessment_uuid,
-        "u_firemon_rule_uid": rule_uid,
-        "u_firemon_control_code": control_code,
-        "u_firemon_severity": control_severity
-    }
+    # Create payload based on table type
+    if table_name == "em_event":
+        # Event Management table schema
+        payload = {
+            "source": "FireMon Security Manager",
+            "node": device_name,
+            "type": "Rule Control Failure",
+            "severity": severity_value,
+            "description": description,
+            "message_key": correlation_id,
+            "resource": f"Rule {rule_number} - {policy_name}",
+            "additional_info": f"Control: {control_name}, Code: {control_code}, Rule: {rule_name}",
+            "time_of_event": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    else:
+        # Incident table schema (default)
+        payload = {
+            "short_description": f"FireMon Control Failure: {control_name} - {rule_name}",
+            "description": description,
+            "correlation_id": correlation_id,
+            "impact": severity_value,
+            "urgency": severity_value,
+            "category": "Security",
+            "subcategory": "Firewall Policy Violation",
+            "u_firemon_device_id": str(device_id),
+            "u_firemon_assessment": assessment_uuid,
+            "u_firemon_rule_uid": rule_uid,
+            "u_firemon_control_code": control_code,
+            "u_firemon_severity": severity_str
+        }
 
     return payload
 
@@ -743,8 +785,9 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
 
         # Create ServiceNow payload for device-level control
         device_name = control.get("deviceName", f"Device-{device_id}")
-        payload = create_servicenow_payload_device_level(control, device_id, device_name, assessment_uuid)
-        correlation_id = payload.get("correlation_id")
+        payload = create_servicenow_payload_device_level(control, device_id, device_name, assessment_uuid, table_name)
+        # Get the unique identifier (correlation_id or message_key depending on table)
+        correlation_id = payload.get("message_key") if table_name == "em_event" else payload.get("correlation_id")
 
         # Check if record already exists
         existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
@@ -815,8 +858,9 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
                 continue
 
             # Create ServiceNow payload
-            payload = create_servicenow_payload(rule, control, device_id, assessment_uuid)
-            correlation_id = payload.get("correlation_id")
+            payload = create_servicenow_payload(rule, control, device_id, assessment_uuid, table_name)
+            # Get the unique identifier (correlation_id or message_key depending on table)
+            correlation_id = payload.get("message_key") if table_name == "em_event" else payload.get("correlation_id")
 
             # Check if record already exists
             existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
