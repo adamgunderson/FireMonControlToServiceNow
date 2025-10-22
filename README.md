@@ -177,6 +177,8 @@ python firemon_to_servicenow.py \
 #### Optional Arguments
 
 - `--snow-table`: ServiceNow table name (default: `incident`)
+  - Supported tables: `incident`, `em_event` (Event Management), or any custom table
+  - The script automatically formats payloads based on the table type
 - `--min-severity`: Minimum severity level to process (choices: INFO, LOW, MEDIUM, HIGH, CRITICAL; default: INFO)
 - `--update-existing`: Update existing records instead of skipping them
 - `--no-verify`: Disable SSL certificate verification (not recommended for production)
@@ -261,6 +263,23 @@ python firemon_to_servicenow.py \
   --snow-table u_firemon_violations
 ```
 
+#### Use Event Management Table
+
+Send control failures to ServiceNow Event Management:
+
+```bash
+python firemon_to_servicenow.py \
+  --firemon-url https://firemon.example.com \
+  --firemon-user admin \
+  --firemon-pass password123 \
+  --snow-url https://instance.service-now.com \
+  --snow-user snow_admin \
+  --snow-pass snow_password \
+  --device-id 123 \
+  --assessment abc-123-def-456 \
+  --snow-table em_event
+```
+
 #### Update Existing Records
 
 ```bash
@@ -325,21 +344,37 @@ python firemon_to_servicenow.py \
 
 ## ServiceNow Table Schema
 
-### Standard Fields (Available in Default Tables)
+The script automatically formats payloads based on the target table type.
 
-The script populates the following standard ServiceNow fields:
+### Incident Table (`incident`)
+
+Standard fields populated for the incident table:
 
 - `short_description`: Brief description of the control failure
 - `description`: Detailed information about the rule and control violation
 - `correlation_id`: Unique identifier for deduplication (format: `FM-{device_id}-{assessment_uuid}-{rule_uid}-{control_code}`)
-- `impact`: Severity mapped from FireMon (1=Critical, 2=High, 3=Medium, 4=Low/Info)
+- `impact`: Severity mapped from FireMon (1=Critical, 2=High, 3=Medium, 4=Low, 5=Info)
 - `urgency`: Same as impact
 - `category`: Set to "Security"
-- `subcategory`: Set to "Firewall Policy Violation"
+- `subcategory`: Set to "Firewall Policy Violation" or "Firewall Configuration Violation"
 
-### Custom Fields (Optional)
+### Event Management Table (`em_event`)
 
-If you're using a custom table, you may want to add these fields:
+Standard fields populated for the em_event table:
+
+- `source`: Set to "FireMon Security Manager"
+- `node`: Device name
+- `type`: "Rule Control Failure" or "Device Control Failure"
+- `severity`: Severity mapped from FireMon (1=Critical, 2=High, 3=Medium, 4=Low, 5=Info)
+- `description`: Detailed information about the rule and control violation
+- `message_key`: Unique identifier for deduplication (format: `FM-{device_id}-{assessment_uuid}-{rule_uid}-{control_code}`)
+- `resource`: Device ID or Rule identifier
+- `additional_info`: Summary of control, code, and rule/device details
+- `time_of_event`: Timestamp when the event was created
+
+### Custom Fields (Optional - Incident Table Only)
+
+If you're using a custom incident table, you may want to add these fields:
 
 - `u_firemon_device_id` (String): FireMon device ID
 - `u_firemon_assessment` (String): FireMon assessment UUID
@@ -370,7 +405,12 @@ The script automatically detects and processes both types, creating appropriatel
 
 ## Deduplication
 
-The script uses a `correlation_id` to prevent duplicate records. The correlation ID formats are:
+The script prevents duplicate records using a unique identifier field:
+
+- **Incident table**: Uses `correlation_id` field
+- **Event Management table**: Uses `message_key` field
+
+The unique identifier formats are:
 
 **Rule-level controls:**
 ```
@@ -383,7 +423,7 @@ FM-{device_id}-{assessment_uuid}-DEVICE-{control_code}
 ```
 
 By default:
-- If a record with the same correlation_id exists, it will be skipped
+- If a record with the same unique identifier exists, it will be skipped
 - Use `--update-existing` to update existing records instead
 
 ## Record Format
@@ -446,25 +486,27 @@ Control Violation:
 
 ## Severity Mapping
 
-FireMon severity levels are mapped to ServiceNow impact/urgency. The script supports both text-based and numeric severity values:
+FireMon severity levels are mapped to ServiceNow severity values. The script supports both text-based and numeric severity values:
 
 ### Text-Based Severity
-| FireMon Severity | ServiceNow Impact/Urgency |
-|-----------------|---------------------------|
-| CRITICAL        | 1 - Critical              |
-| HIGH            | 2 - High                  |
-| MEDIUM          | 3 - Medium                |
-| LOW             | 4 - Low                   |
-| INFO            | 4 - Low                   |
+| FireMon Severity | ServiceNow Severity | Description |
+|-----------------|---------------------|-------------|
+| CRITICAL        | 1                   | Critical    |
+| HIGH            | 2                   | High        |
+| MEDIUM          | 3                   | Medium      |
+| LOW             | 4                   | Low         |
+| INFO            | 5                   | Info        |
+
+**Note**: For the `incident` table, severity values map to both `impact` and `urgency` fields. For the `em_event` table, they map to the `severity` field.
 
 ### Numeric Severity (automatically converted)
-| FireMon Numeric | Converted To | ServiceNow Impact/Urgency |
-|----------------|--------------|---------------------------|
-| 9-10           | CRITICAL     | 1 - Critical              |
-| 7-8            | HIGH         | 2 - High                  |
-| 5-6            | MEDIUM       | 3 - Medium                |
-| 3-4            | LOW          | 4 - Low                   |
-| 0-2            | INFO         | 4 - Low                   |
+| FireMon Numeric | Converted To | ServiceNow Severity |
+|----------------|--------------|---------------------|
+| 9-10           | CRITICAL     | 1 - Critical        |
+| 7-8            | HIGH         | 2 - High            |
+| 5-6            | MEDIUM       | 3 - Medium          |
+| 3-4            | LOW          | 4 - Low             |
+| 0-2            | INFO         | 5 - Info            |
 
 ## Output
 
