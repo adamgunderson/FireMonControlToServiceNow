@@ -392,14 +392,23 @@ def check_existing_record(session, instance_url, table_name, unique_identifier, 
     }
 
     try:
+        logger.debug(f"Checking for existing record: {url} with query {query_field}={unique_identifier}")
         response = session.get(url, params=params, verify=verify_ssl)
+        logger.debug(f"ServiceNow response status: {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
             results = data.get('result', [])
+            logger.debug(f"ServiceNow returned {len(results)} result(s)")
             if results:
-                logger.debug(f"Found existing record for {unique_identifier}")
-                return results[0]
+                # Verify the correlation_id actually matches (not just any record returned)
+                returned_correlation = results[0].get(query_field, '')
+                if returned_correlation == unique_identifier:
+                    logger.debug(f"Found existing record for {unique_identifier}")
+                    return results[0]
+                else:
+                    logger.debug(f"Record found but {query_field} doesn't match: '{returned_correlation}' != '{unique_identifier}'")
+                    return None
 
         return None
 
