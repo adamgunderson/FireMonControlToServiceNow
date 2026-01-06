@@ -337,6 +337,37 @@ def get_all_devices(base_url, session, verify_ssl=True):
         logger.error(f"Error getting devices: {e}")
         return []
 
+def get_device_name(base_url, session, device_id, verify_ssl=True):
+    """
+    Get device name from FireMon API
+
+    Args:
+        base_url (str): Base URL for FireMon API
+        session (requests.Session): Authenticated session
+        device_id (int): Device ID
+        verify_ssl (bool): Whether to verify SSL certificates
+
+    Returns:
+        str: Device name or fallback string
+    """
+    url = f"{base_url}/securitymanager/api/domain/1/device/{device_id}"
+
+    try:
+        response = session.get(url, verify=verify_ssl)
+
+        if response.status_code == 200:
+            data = response.json()
+            device_name = data.get("name", f"Device-{device_id}")
+            logger.debug(f"Retrieved device name: {device_name} for device ID {device_id}")
+            return device_name
+        else:
+            logger.warning(f"Failed to get device name for ID {device_id}. Status: {response.status_code}")
+            return f"Device-{device_id}"
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error getting device name: {e}")
+        return f"Device-{device_id}"
+
 # ============================================================================
 # ServiceNow API Functions
 # ============================================================================
@@ -383,6 +414,8 @@ def check_existing_record(session, instance_url, table_name, unique_identifier, 
     # Use appropriate field for deduplication based on table type
     if table_name == "em_event":
         query_field = "message_key"
+    elif table_name.startswith("u_"):
+        query_field = "u_correlation_id"
     else:
         query_field = "correlation_id"
 
@@ -600,6 +633,19 @@ Control Violation:
             "additional_info": f"Control: {control_name}, Code: {control_code}, Type: {control_type}",
             "time_of_event": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         }
+    elif table_name.startswith("u_"):
+        # Custom table schema (u_ prefixed fields)
+        payload = {
+            "u_short_description": f"FireMon Device Control Failure: {control_name} - {device_name}",
+            "u_description": description,
+            "u_correlation_id": correlation_id,
+            "u_firemon_device_id": str(device_id),
+            "u_firemon_device_name": device_name,
+            "u_firemon_assessment": assessment_uuid,
+            "u_firemon_control_code": control_code,
+            "u_firemon_control_type": control_type,
+            "u_firemon_severity": severity_str
+        }
     else:
         # Incident table schema (default)
         payload = {
@@ -619,7 +665,7 @@ Control Violation:
 
     return payload
 
-def create_servicenow_payload(rule, control, device_id, assessment_uuid, table_name="incident"):
+def create_servicenow_payload(rule, control, device_id, device_name, assessment_uuid, table_name="incident"):
     """
     Create ServiceNow record payload from FireMon rule and control data
 
@@ -627,6 +673,7 @@ def create_servicenow_payload(rule, control, device_id, assessment_uuid, table_n
         rule (dict): FireMon rule data
         control (dict): FireMon control violation data
         device_id (int): Device ID
+        device_name (str): Device name from FireMon API
         assessment_uuid (str): Assessment UUID
         table_name (str): ServiceNow table name (default: incident)
 
@@ -637,7 +684,6 @@ def create_servicenow_payload(rule, control, device_id, assessment_uuid, table_n
     rule_number = rule.get("ruleNumber", "")
     rule_severity = rule.get("cumulativeRuleSeverity", "")
     policy_name = rule.get("policy", {}).get("displayName", "")
-    device_name = rule.get("deviceName", f"Device-{device_id}")
 
     sources = format_network_objects(rule.get("sources", []))
     destinations = format_network_objects(rule.get("destinations", []))
@@ -705,6 +751,19 @@ Control Violation:
             "additional_info": f"Control: {control_name}, Code: {control_code}, Rule: {rule_name}",
             "time_of_event": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         }
+    elif table_name.startswith("u_"):
+        # Custom table schema (u_ prefixed fields)
+        payload = {
+            "u_short_description": f"FireMon Control Failure: {control_name} - {rule_name}",
+            "u_description": description,
+            "u_correlation_id": correlation_id,
+            "u_firemon_device_id": str(device_id),
+            "u_firemon_device_name": device_name,
+            "u_firemon_assessment": assessment_uuid,
+            "u_firemon_rule_uid": rule_uid,
+            "u_firemon_control_code": control_code,
+            "u_firemon_severity": severity_str
+        }
     else:
         # Incident table schema (default)
         payload = {
@@ -761,6 +820,10 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
         "errors": 0
     }
 
+    # Get device name from FireMon API
+    device_name = get_device_name(firemon_url, fm_session, device_id, verify_ssl)
+    logger.info(f"Processing device: {device_name} (ID: {device_id})")
+
     # First, process device-level control failures
     logger.info(f"Checking device-level control failures for device {device_id}")
     device_controls = get_device_level_control_failures(firemon_url, fm_session, device_id, assessment_uuid, verify_ssl)
@@ -793,10 +856,14 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
             continue
 
         # Create ServiceNow payload for device-level control
-        device_name = control.get("deviceName", f"Device-{device_id}")
         payload = create_servicenow_payload_device_level(control, device_id, device_name, assessment_uuid, table_name)
         # Get the unique identifier (correlation_id or message_key depending on table)
-        correlation_id = payload.get("message_key") if table_name == "em_event" else payload.get("correlation_id")
+        if table_name == "em_event":
+            correlation_id = payload.get("message_key")
+        elif table_name.startswith("u_"):
+            correlation_id = payload.get("u_correlation_id")
+        else:
+            correlation_id = payload.get("correlation_id")
 
         # Check if record already exists
         existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
@@ -867,9 +934,14 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
                 continue
 
             # Create ServiceNow payload
-            payload = create_servicenow_payload(rule, control, device_id, assessment_uuid, table_name)
+            payload = create_servicenow_payload(rule, control, device_id, device_name, assessment_uuid, table_name)
             # Get the unique identifier (correlation_id or message_key depending on table)
-            correlation_id = payload.get("message_key") if table_name == "em_event" else payload.get("correlation_id")
+            if table_name == "em_event":
+                correlation_id = payload.get("message_key")
+            elif table_name.startswith("u_"):
+                correlation_id = payload.get("u_correlation_id")
+            else:
+                correlation_id = payload.get("correlation_id")
 
             # Check if record already exists
             existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
