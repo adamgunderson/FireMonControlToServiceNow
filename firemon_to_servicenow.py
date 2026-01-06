@@ -305,33 +305,57 @@ def get_device_group_devices(base_url, session, device_group_id, verify_ssl=True
         logger.error(f"Error getting device group: {e}")
         return []
 
-def get_all_devices(base_url, session, verify_ssl=True):
+def get_all_devices(base_url, session, verify_ssl=True, page_size=100):
     """
-    Get all devices in the domain
+    Get all devices in the domain (handles pagination)
 
     Args:
         base_url (str): Base URL for FireMon API
         session (requests.Session): Authenticated session
         verify_ssl (bool): Whether to verify SSL certificates
+        page_size (int): Number of devices per page
 
     Returns:
         list: List of device IDs
     """
-    url = f"{base_url}/securitymanager/api/domain/1/device"
+    all_device_ids = []
+    page = 0
 
     try:
-        response = session.get(url, verify=verify_ssl)
+        while True:
+            url = f"{base_url}/securitymanager/api/domain/1/device?page={page}&pageSize={page_size}"
+            response = session.get(url, verify=verify_ssl)
 
-        if response.status_code != 200:
-            logger.error(f"Failed to get devices. Status code: {response.status_code}")
-            logger.error(f"Response: {response.text}")
-            return []
+            if response.status_code != 200:
+                logger.error(f"Failed to get devices. Status code: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return []
 
-        data = response.json()
-        device_ids = [device.get("id") for device in data if device.get("id")]
+            data = response.json()
+            logger.debug(f"Device API response type: {type(data)}, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
 
-        logger.info(f"Found {len(device_ids)} total devices in domain")
-        return device_ids
+            # API returns paginated response with 'results' key
+            if isinstance(data, dict):
+                devices = data.get("results", [])
+                total = data.get("total", 0)
+            else:
+                logger.error(f"Unexpected response format: {type(data)}")
+                return []
+
+            # Extract device IDs from this page
+            page_device_ids = [device.get("id") for device in devices if isinstance(device, dict) and device.get("id")]
+            all_device_ids.extend(page_device_ids)
+
+            logger.debug(f"Page {page}: Retrieved {len(page_device_ids)} devices (total so far: {len(all_device_ids)} of {total})")
+
+            # Check if we've retrieved all devices
+            if len(all_device_ids) >= total or len(devices) == 0:
+                break
+
+            page += 1
+
+        logger.info(f"Found {len(all_device_ids)} total devices in domain")
+        return all_device_ids
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error getting devices: {e}")
