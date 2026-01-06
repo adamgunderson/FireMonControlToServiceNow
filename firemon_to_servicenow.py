@@ -536,6 +536,50 @@ def update_servicenow_record(session, instance_url, table_name, sys_id, record_d
         logger.error(f"Error updating ServiceNow record: {e}")
         return None
 
+def get_existing_snow_records(session, instance_url, table_name, device_id, assessment_uuid, verify_ssl=True):
+    """
+    Get existing ServiceNow records for a device/assessment that are in "Failed" state
+
+    Args:
+        session (requests.Session): ServiceNow session
+        instance_url (str): ServiceNow instance URL
+        table_name (str): Table name to search
+        device_id (int): FireMon device ID
+        assessment_uuid (str): FireMon assessment UUID
+        verify_ssl (bool): Whether to verify SSL certificates
+
+    Returns:
+        list: List of existing records with sys_id and correlation_id
+    """
+    url = f"{instance_url}/api/now/table/{table_name}"
+
+    # Build query for records matching device, assessment, and in Failed state
+    query = f"u_firemon_device_id={device_id}^u_firemon_assessment={assessment_uuid}^u_firemon_state=Failed"
+
+    params = {
+        'sysparm_query': query,
+        'sysparm_fields': 'sys_id,u_correlation_id',
+        'sysparm_limit': 10000  # Get all matching records
+    }
+
+    try:
+        logger.debug(f"Querying ServiceNow for existing Failed records: {query}")
+        response = session.get(url, params=params, verify=verify_ssl)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('result', [])
+            logger.debug(f"Found {len(results)} existing Failed records in ServiceNow")
+            return results
+        else:
+            logger.error(f"Failed to query ServiceNow. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return []
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error querying ServiceNow records: {e}")
+        return []
+
 # ============================================================================
 # Data Formatting Functions
 # ============================================================================
@@ -668,7 +712,8 @@ Control Violation:
             "u_firemon_assessment": assessment_uuid,
             "u_firemon_control_code": control_code,
             "u_firemon_control_type": control_type,
-            "u_firemon_severity": severity_str
+            "u_firemon_severity": severity_str,
+            "u_firemon_state": "Failed"
         }
     else:
         # Incident table schema (default)
@@ -786,7 +831,8 @@ Control Violation:
             "u_firemon_assessment": assessment_uuid,
             "u_firemon_rule_uid": rule_uid,
             "u_firemon_control_code": control_code,
-            "u_firemon_severity": severity_str
+            "u_firemon_severity": severity_str,
+            "u_firemon_state": "Failed"
         }
     else:
         # Incident table schema (default)
@@ -841,8 +887,12 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
         "updated": 0,
         "skipped": 0,
         "filtered": 0,
+        "resolved": 0,
         "errors": 0
     }
+
+    # Track all correlation_ids for current failures (used to detect resolved controls)
+    current_failure_correlation_ids = set()
 
     # Get device name from FireMon API
     device_name = get_device_name(firemon_url, fm_session, device_id, verify_ssl)
@@ -888,6 +938,9 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
             correlation_id = payload.get("u_correlation_id")
         else:
             correlation_id = payload.get("correlation_id")
+
+        # Track this failure for resolution detection
+        current_failure_correlation_ids.add(correlation_id)
 
         # Check if record already exists
         existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
@@ -967,6 +1020,9 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
             else:
                 correlation_id = payload.get("correlation_id")
 
+            # Track this failure for resolution detection
+            current_failure_correlation_ids.add(correlation_id)
+
             # Check if record already exists
             existing_record = check_existing_record(snow_session, snow_url, table_name, correlation_id, verify_ssl)
 
@@ -987,6 +1043,32 @@ def process_single_device_assessment(firemon_url, fm_session, snow_session, snow
                 result = create_servicenow_record(snow_session, snow_url, table_name, payload, verify_ssl)
                 if result:
                     stats["created"] += 1
+                else:
+                    stats["errors"] += 1
+
+    # Check for resolved controls (only for custom tables with state tracking)
+    if table_name.startswith("u_"):
+        logger.info(f"Checking for resolved controls in ServiceNow for device {device_id}")
+
+        # Get existing Failed records from ServiceNow for this device/assessment
+        existing_failed_records = get_existing_snow_records(
+            snow_session, snow_url, table_name, device_id, assessment_uuid, verify_ssl
+        )
+
+        # Find records that are no longer failing
+        for record in existing_failed_records:
+            record_correlation_id = record.get("u_correlation_id", "")
+            record_sys_id = record.get("sys_id", "")
+
+            if record_correlation_id and record_correlation_id not in current_failure_correlation_ids:
+                # This control is no longer failing - update state to Passing
+                logger.info(f"Resolving control: {record_correlation_id}")
+                update_data = {"u_firemon_state": "Passing"}
+                result = update_servicenow_record(
+                    snow_session, snow_url, table_name, record_sys_id, update_data, verify_ssl
+                )
+                if result:
+                    stats["resolved"] += 1
                 else:
                     stats["errors"] += 1
 
@@ -1024,6 +1106,7 @@ def process_control_failures(firemon_url, firemon_user, firemon_pass, snow_url, 
         "updated": 0,
         "skipped": 0,
         "filtered": 0,
+        "resolved": 0,
         "errors": 0,
         "devices_processed": 0,
         "assessments_processed": 0
@@ -1079,6 +1162,7 @@ def process_control_failures(firemon_url, firemon_user, firemon_pass, snow_url, 
             aggregate_stats["updated"] += stats["updated"]
             aggregate_stats["skipped"] += stats["skipped"]
             aggregate_stats["filtered"] += stats["filtered"]
+            aggregate_stats["resolved"] += stats["resolved"]
             aggregate_stats["errors"] += stats["errors"]
 
     return aggregate_stats
@@ -1250,6 +1334,7 @@ Examples:
     logger.info(f"  Records created: {stats['created']}")
     logger.info(f"  Records updated: {stats['updated']}")
     logger.info(f"  Records skipped: {stats['skipped']}")
+    logger.info(f"  Records resolved (Passing): {stats['resolved']}")
     logger.info(f"  Errors: {stats['errors']}")
     logger.info("=" * 60)
 

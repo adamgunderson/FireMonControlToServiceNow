@@ -11,9 +11,13 @@ This script sends FireMon Security Manager control failures to ServiceNow, creat
 - **Process multiple devices and assessments in a single run**
 - **Support for device groups and all devices in domain**
 - Creates records in ServiceNow using the Table API
+- **Full support for custom ServiceNow tables** (tables prefixed with `u_`)
 - Deduplication based on correlation ID to avoid duplicate records
+- **State tracking for control failures** (Failed/Passing)
+- **Automatic resolution detection** - marks controls as "Passing" when resolved in FireMon
 - **Severity filtering to reduce noise** (supports both text and numeric severity levels)
 - Update existing records or skip duplicates
+- Device name fetched directly from FireMon API
 - Comprehensive logging and error handling
 - SSL certificate verification (can be disabled for testing)
 - Pagination support for large result sets
@@ -372,15 +376,42 @@ Standard fields populated for the em_event table:
 - `additional_info`: Summary of control, code, and rule/device details
 - `time_of_event`: Timestamp when the event was created
 
-### Custom Fields (Optional - Incident Table Only)
+### Custom Table (`u_` prefixed tables)
 
-If you're using a custom incident table, you may want to add these fields:
+When using a custom table (table name starting with `u_`, e.g., `u_firemon_violations`), the script automatically uses `u_` prefixed field names. Create these fields in your custom table:
+
+#### Required Fields
+
+| Field Name | Type | Description |
+|------------|------|-------------|
+| `u_short_description` | String | Brief description of the control failure |
+| `u_description` | String (Long) | Full details including rule/device info |
+| `u_correlation_id` | String | Unique identifier for deduplication |
+| `u_firemon_state` | String | State tracking: "Failed" or "Passing" |
+
+#### Recommended Fields
+
+| Field Name | Type | Description |
+|------------|------|-------------|
+| `u_firemon_device_id` | String | FireMon device ID |
+| `u_firemon_device_name` | String | Device name from FireMon |
+| `u_firemon_assessment` | String | FireMon assessment UUID |
+| `u_firemon_control_code` | String | FireMon control code |
+| `u_firemon_severity` | String | Severity level (CRITICAL, HIGH, MEDIUM, LOW, INFO) |
+| `u_firemon_control_type` | String | Control type (device-level only) |
+| `u_firemon_rule_uid` | String | Rule UID (rule-level only) |
+
+**Note**: The script uses `u_correlation_id` for deduplication and `u_firemon_state` for tracking resolution status. These fields are essential for proper operation with custom tables.
+
+### Custom Fields (Incident Table)
+
+If you're using the standard `incident` table and want to add FireMon-specific fields:
 
 - `u_firemon_device_id` (String): FireMon device ID
 - `u_firemon_assessment` (String): FireMon assessment UUID
 - `u_firemon_rule_uid` (String): FireMon rule UID
 - `u_firemon_control_code` (String): FireMon control code
-- `u_firemon_severity` (String): Original FireMon severity (CRITICAL, HIGH, MEDIUM, LOW, INFO)
+- `u_firemon_severity` (String): Original FireMon severity
 
 **Note**: If these custom fields don't exist in your table, ServiceNow will ignore them. The script will still work with just the standard fields.
 
@@ -425,6 +456,47 @@ FM-{device_id}-{assessment_uuid}-DEVICE-{control_code}
 By default:
 - If a record with the same unique identifier exists, it will be skipped
 - Use `--update-existing` to update existing records instead
+
+## State Tracking & Resolution (Custom Tables)
+
+When using a custom table (prefixed with `u_`), the script tracks the state of control failures and automatically detects when controls are resolved.
+
+### How It Works
+
+1. **New failures**: When a control failure is detected, a record is created with `u_firemon_state = "Failed"`
+
+2. **Existing failures**: If the control is still failing, the existing record is skipped (or updated if `--update-existing` is used)
+
+3. **Resolved controls**: After processing all current failures, the script:
+   - Queries ServiceNow for existing "Failed" records for the device/assessment
+   - Compares against current failures
+   - Updates any record NOT in current failures to `u_firemon_state = "Passing"`
+
+### Example Workflow
+
+```
+Run 1 (Initial):
+- Control A fails → Creates record (state=Failed)
+- Control B fails → Creates record (state=Failed)
+- Control C fails → Creates record (state=Failed)
+
+Run 2 (Control A is now passing in FireMon):
+- Control B still fails → Skips existing record
+- Control C still fails → Skips existing record
+- Control A not in failures → Updates record to state=Passing
+
+Summary shows: "Records resolved (Passing): 1"
+```
+
+### Requirements
+
+For state tracking to work, your custom table must have:
+- `u_firemon_state` field (String)
+- `u_correlation_id` field (String)
+- `u_firemon_device_id` field (String)
+- `u_firemon_assessment` field (String)
+
+**Note**: State tracking is only available for custom tables (`u_` prefix). Standard tables like `incident` and `em_event` do not support this feature.
 
 ## Record Format
 
@@ -523,6 +595,7 @@ Integration Summary:
   Records created: 30
   Records updated: 0
   Records skipped: 3
+  Records resolved (Passing): 5
   Errors: 0
 ```
 
@@ -534,6 +607,7 @@ The summary shows:
   - **Device-level failures**: Control failures tied to device properties/configurations
 - **Filtered**: Control failures ignored due to severity filtering
 - **Records created/updated/skipped**: Actions taken in ServiceNow
+- **Records resolved (Passing)**: Previously failing controls that are now passing in FireMon (custom tables only)
 
 ## Severity Filtering
 
