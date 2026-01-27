@@ -52,6 +52,107 @@ SEVERITY_LEVELS = {
 }
 
 # ============================================================================
+# Email Notification Functions
+# ============================================================================
+
+def send_email_notification(recipients, subject, body, sender="firemon@localhost"):
+    """
+    Send email notification using sendmail
+
+    Args:
+        recipients (list): List of email addresses
+        subject (str): Email subject
+        body (str): Email body text
+        sender (str): Sender email address
+
+    Returns:
+        bool: True if email sent successfully, False otherwise
+    """
+    import subprocess
+
+    # Build email message
+    to_header = ", ".join(recipients)
+    message = f"""From: {sender}
+To: {to_header}
+Subject: {subject}
+Content-Type: text/plain; charset=utf-8
+
+{body}
+"""
+
+    try:
+        # Use sendmail to send the email
+        process = subprocess.Popen(
+            ["/usr/sbin/sendmail", "-t", "-oi"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = process.communicate(input=message.encode('utf-8'))
+
+        if process.returncode == 0:
+            logger.info(f"Email notification sent to: {to_header}")
+            return True
+        else:
+            logger.error(f"Failed to send email. Return code: {process.returncode}")
+            logger.error(f"stderr: {stderr.decode('utf-8')}")
+            return False
+
+    except FileNotFoundError:
+        logger.error("sendmail not found at /usr/sbin/sendmail")
+        return False
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return False
+
+def format_email_body(stats, start_time):
+    """
+    Format statistics into an email body
+
+    Args:
+        stats (dict): Statistics dictionary from script run
+        start_time (datetime): When the script started
+
+    Returns:
+        tuple: (subject, body) for the email
+    """
+    from datetime import datetime
+
+    # Determine status
+    if stats['errors'] > 0:
+        status = "COMPLETED WITH ERRORS"
+    else:
+        status = "COMPLETED SUCCESSFULLY"
+
+    # Build subject line
+    subject = f"FireMon to ServiceNow - {stats['devices_processed']} devices - {stats['total_failures']} failures - {stats['errors']} errors"
+
+    # Build body
+    body = f"""FireMon to ServiceNow Integration Report
+{'=' * 42}
+Run Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}
+
+Summary:
+  Devices processed: {stats['devices_processed']}
+  Assessments processed: {stats['assessments_processed']}
+  Total control failures: {stats['total_failures']}
+    - Rule-level: {stats['rule_failures']}
+    - Device-level: {stats['device_failures']}
+
+Results:
+  Records created: {stats['created']}
+  Records updated: {stats['updated']}
+  Records skipped: {stats['skipped']}
+  Records resolved (Passing): {stats['resolved']}
+  Filtered (below severity): {stats['filtered']}
+  Errors: {stats['errors']}
+
+Status: {status}
+"""
+
+    return subject, body
+
+# ============================================================================
 # FireMon API Functions
 # ============================================================================
 
@@ -1260,6 +1361,8 @@ Examples:
                        help='Disable SSL certificate verification')
     parser.add_argument('-v', '--verbose', action='store_true',
                        help='Enable verbose debug output')
+    parser.add_argument('--email-to', action='append', dest='email_to',
+                       help='Email address for notifications (can be specified multiple times)')
 
     args = parser.parse_args()
 
@@ -1307,6 +1410,7 @@ Examples:
 
     # Process control failures
     logger.info("Starting FireMon to ServiceNow integration...")
+    start_time = datetime.utcnow()
     stats = process_control_failures(
         firemon_url=args.firemon_url,
         firemon_user=args.firemon_user,
@@ -1337,6 +1441,11 @@ Examples:
     logger.info(f"  Records resolved (Passing): {stats['resolved']}")
     logger.info(f"  Errors: {stats['errors']}")
     logger.info("=" * 60)
+
+    # Send email notification if recipients specified
+    if args.email_to:
+        subject, body = format_email_body(stats, start_time)
+        send_email_notification(args.email_to, subject, body)
 
     # Exit with appropriate code
     if stats['errors'] > 0:

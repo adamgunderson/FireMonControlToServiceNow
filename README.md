@@ -187,6 +187,7 @@ python firemon_to_servicenow.py \
 - `--update-existing`: Update existing records instead of skipping them
 - `--no-verify`: Disable SSL certificate verification (not recommended for production)
 - `-v, --verbose`: Enable verbose debug output
+- `--email-to`: Email address for notifications (can be specified multiple times for multiple recipients)
 
 ### Examples
 
@@ -678,6 +679,139 @@ For example, processing 3 devices against 2 assessments will result in 6 device/
 - Verify the fields exist in the target ServiceNow table
 - Check field permissions for the ServiceNow user
 - Fields prefixed with `u_` are custom fields and must be created manually
+
+## Scheduling with Cron (Linux)
+
+You can schedule the script to run automatically using cron on Linux systems.
+
+### Setup
+
+1. **Find your Python path:**
+   ```bash
+   whereis python3
+   # Example output: /usr/bin/python3.12
+   ```
+
+2. **Create a script wrapper** (recommended for cron jobs):
+   ```bash
+   cat > /home/fmosadmin/run_firemon_snow.sh << 'EOF'
+   #!/bin/bash
+
+   # FireMon to ServiceNow Integration
+   # Scheduled via cron
+
+   # Set environment variables for credentials
+   export FIREMON_URL="https://firemon.example.com"
+   export FIREMON_USER="servicenow"
+   export FIREMON_PASS="your_firemon_password"
+   export SNOW_URL="https://instance.service-now.com"
+   export SNOW_USER="firemon_service_account"
+   export SNOW_PASS='your_servicenow_password'
+
+   # Email notification recipients
+   EMAIL_TO="admin@example.com"
+
+   # Run the script
+   /usr/bin/python3.12 /home/fmosadmin/firemon_to_servicenow.py \
+     --firemon-url "$FIREMON_URL" \
+     --firemon-user "$FIREMON_USER" \
+     --firemon-pass "$FIREMON_PASS" \
+     --snow-url "$SNOW_URL" \
+     --snow-user "$SNOW_USER" \
+     --snow-pass "$SNOW_PASS" \
+     --all-devices \
+     --assessment aed5435d-ea57-43df-a81f-fcf333b4f94a \
+     --snow-table u_firemon_violations \
+     --no-verify \
+     --email-to "$EMAIL_TO" \
+     >> /var/log/firemon_snow.log 2>&1
+   EOF
+
+   chmod +x /home/fmosadmin/run_firemon_snow.sh
+   ```
+
+3. **Set secure permissions on the script:**
+   ```bash
+   chmod 700 /home/fmosadmin/run_firemon_snow.sh
+   ```
+
+### Cron Schedule Examples
+
+Edit crontab with `crontab -e` and add your schedule:
+
+#### Run every Sunday and Thursday at 2:00 AM
+```cron
+0 2 * * 0,4 /home/fmosadmin/run_firemon_snow.sh
+```
+
+#### Run daily at midnight
+```cron
+0 0 * * * /home/fmosadmin/run_firemon_snow.sh
+```
+
+#### Run every 6 hours
+```cron
+0 */6 * * * /home/fmosadmin/run_firemon_snow.sh
+```
+
+#### Run Monday through Friday at 6:00 AM
+```cron
+0 6 * * 1-5 /home/fmosadmin/run_firemon_snow.sh
+```
+
+### Cron Field Reference
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sunday=0)
+│ │ │ │ │
+* * * * * command
+```
+
+### Verify Cron is Running
+
+```bash
+# List current crontab
+crontab -l
+
+# Check cron logs
+grep CRON /var/log/syslog
+
+# Check script output
+tail -f /var/log/firemon_snow.log
+```
+
+### Email Notifications
+
+The script can send email notifications after each run using the system's sendmail.
+
+#### Single Recipient
+```bash
+python firemon_to_servicenow.py ... --email-to admin@example.com
+```
+
+#### Multiple Recipients
+```bash
+python firemon_to_servicenow.py ... --email-to admin@example.com --email-to team@example.com
+```
+
+#### Email Format
+- **Subject:** `FireMon to ServiceNow - 3 devices - 45 failures - 0 errors`
+- **Body:** Full summary including devices processed, failures found, records created/updated/resolved, and status
+
+#### Requirements
+- `sendmail` must be installed and configured at `/usr/sbin/sendmail`
+- The server must be able to send outbound email
+
+### Security Best Practices
+
+1. **Never put passwords directly in crontab** - use a wrapper script with restricted permissions
+2. **Restrict script permissions** - `chmod 700` ensures only the owner can read/execute
+3. **Use a dedicated service account** - don't run as root unless necessary
+4. **Rotate logs** - consider using logrotate for `/var/log/firemon_snow.log`
 
 ## Related Files
 
