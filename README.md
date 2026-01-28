@@ -724,7 +724,7 @@ You can schedule the script to run automatically using cron on Linux systems.
      --snow-table u_firemon_violations \
      --no-verify \
      --email-to "$EMAIL_TO" \
-     >> /var/log/firemon_snow.log 2>&1
+     >> /var/tmp/firemon_snow.log 2>&1
    EOF
 
    chmod +x /home/fmosadmin/run_firemon_snow.sh
@@ -781,7 +781,7 @@ crontab -l
 grep CRON /var/log/syslog
 
 # Check script output
-tail -f /var/log/firemon_snow.log
+tail -f /var/tmp/firemon_snow.log
 ```
 
 ### Email Notifications
@@ -811,14 +811,10 @@ python firemon_to_servicenow.py ... --email-to admin@example.com --email-to team
 1. **Never put passwords directly in crontab** - use a wrapper script with restricted permissions
 2. **Restrict script permissions** - `chmod 700` ensures only the owner can read/execute
 3. **Use a dedicated service account** - don't run as root unless necessary
-4. **Rotate logs** - consider using logrotate for `/var/log/firemon_snow.log`
+4. **Rotate logs** - consider using logrotate for `/var/tmp/firemon_snow.log`
 
-## Related Files
 
-- `firemon_assessment_export.py`: Original script that exports control failures to CSV
-- `openapi-sm.json`: FireMon Security Manager API specification
-- `servicenow_table_api_latest_spec.json`: ServiceNow Table API specification
+## Disclaimer
+NO WARRANTY. This software is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-## License
-
-This script is provided as-is for integration purposes.
+This is a community-contributed project and is not covered under any official support contracts or SLAs. By using this script, you acknowledge that you are responsible for testing and validating its behavior in your specific environment.
