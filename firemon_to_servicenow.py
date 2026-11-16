@@ -6,28 +6,38 @@ import sys
 import os
 import glob
 
-# Dynamically add FireMon package paths based on available Python versions
-# This supports Python 3.8 through 3.12+ on FireMon OS
-firemon_base_path = '/usr/lib/firemon/devpackfw/lib'
+# Locate the 'requests' package. Use the system install if present; otherwise
+# search the locations where FireMon OS bundles its Python packages. The
+# location has moved between FMOS releases, so several layouts are checked.
+FIREMON_SITE_PACKAGE_PATTERNS = [
+    '/usr/lib/firemon/devpackfw/lib/python3.*/site-packages',  # Legacy FireMon
+    '/usr/lib64/fmos/lib/python3.*/site-packages',             # FMOS-based installs
+    '/usr/lib64/support-python/lib64/python3.*/site-packages', # Newer FMOS releases
+    '/usr/lib64/support-python/lib/python3.*/site-packages',   # Newer FMOS releases
+]
 
-# Check if FireMon package directory exists
-if os.path.exists(firemon_base_path):
-    # Find all pythonX.Y directories and sort them in reverse order (newest first)
-    python_dirs = glob.glob(os.path.join(firemon_base_path, 'python3.*'))
-    python_dirs.sort(reverse=True)
-
-    # Add all found paths to sys.path (prioritize newer versions)
-    for python_dir in python_dirs:
-        site_packages = os.path.join(python_dir, 'site-packages')
-        if os.path.exists(site_packages) and site_packages not in sys.path:
-            sys.path.insert(0, site_packages)
-
-# Try to import requests
 try:
     import requests
 except ImportError:
-    # If still failing, import without FireMon paths (for non-FireMon systems)
-    import requests
+    candidates = []
+    for pattern in FIREMON_SITE_PACKAGE_PATTERNS:
+        candidates.extend(glob.glob(pattern))
+    # Prefer site-packages matching the running interpreter's version
+    current_ver = 'python{}.{}'.format(sys.version_info.major, sys.version_info.minor)
+    candidates.sort(key=lambda p: (current_ver in p, p))
+    for site_packages in candidates:
+        if os.path.isdir(site_packages) and site_packages not in sys.path:
+            sys.path.insert(0, site_packages)
+    try:
+        import requests
+    except ImportError:
+        sys.stderr.write(
+            "ERROR: Could not find the 'requests' Python module.\n"
+            "Searched system paths and FireMon locations:\n  "
+            + "\n  ".join(FIREMON_SITE_PACKAGE_PATTERNS) + "\n"
+            "Locate it with: find / -type d -name requests -path '*site-packages*' 2>/dev/null\n"
+        )
+        sys.exit(1)
 
 import argparse
 import json
